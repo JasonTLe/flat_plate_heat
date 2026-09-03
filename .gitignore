@@ -1,0 +1,9 @@
+# Claude Code session/local state
+.claude/
+
+# Python
+__pycache__/
+*.pyc
+
+# Windows/WSL zone identifier metadata
+*:Zone.Identifier
