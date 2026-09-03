@@ -1,9 +1,11 @@
 """
-Blasius laminar flat-plate similarity solutions vs SU2 and ADflow CFD results.
+Blasius laminar flat-plate similarity solutions vs SU2 and ADflow CFD
+results, comparing all three ADflow grid-convergence mesh levels
+(l0, l1, l2) against SU2 and Blasius theory.
 
 Case: SU2 "Laminar Flat Plate" tutorial (lam_flatplate.cfg), run twice:
-  compressible/    -> SOLVER= NAVIER_STOKES,      adiabatic wall (no heat transfer)
-  incompressible/  -> SOLVER= INC_NAVIER_STOKES,  isothermal cooled wall (148.81 K)
+  su2/compressible/    -> SOLVER= NAVIER_STOKES,      adiabatic wall (no heat transfer)
+  su2/incompressible/  -> SOLVER= INC_NAVIER_STOKES,  isothermal cooled wall (148.81 K)
 
   https://su2code.github.io/tutorials/Laminar_Flat_Plate/
 
@@ -20,31 +22,43 @@ this run now has both variable viscosity AND variable density, i.e. roughly
 ADflow's physics solved via SU2's incompressible (pressure-based) algorithm
 instead of ADflow's compressible (density-based) one. See
 su2/incompressible/lam_flatplate.cfg for the exact change.
+SU2 curves are PCHIP-interpolated onto a fine grid and drawn as dashed
+lines rather than raw markers, since ADflow contributes three overlapping
+marker series.
 
-Plus ADflow run on the same freestream/wall spec (adflow_run.py, mesh
-meshes/fp_l2_rebunch_fixed_inout.cgns) -- isothermal wall like the
-incompressible SU2 case, so it's compared against both the Cf/velocity
-theory curves and the incompressible case's Nu(x/L).
+Plus ADflow runs on the same freestream/wall spec (adflow_run.py) --
+isothermal wall like the incompressible SU2 case, compared against both
+the Cf/velocity theory curves and the incompressible case's Nu(x/L).
+Three mesh levels from the grid-convergence study are included, from
+gc_study/, each roughly doubling the streamwise wall-cell count of the
+one below it:
+  l0 -> meshes/fp_l0_rebunch_fixed_inout.cgns  (156 wall cells)
+  l1 -> meshes/fp_l1_rebunch_fixed_inout.cgns  (78 wall cells)
+  l2 -> meshes/fp_l2_rebunch_fixed_inout.cgns  (39 wall cells)
 
 Reads (from each SU2 case directory):
   lam_flatplate.cfg   -> freestream conditions (M, T, Re, L)
   surface_flow.vtu    -> wall skin-friction / heat-flux distribution
   flow.vtu             -> volume field, for velocity profiles
 
-Reads (from output/, the ADflow case):
+Reads (from each ADflow case directory gc_study/l0, l1, l2):
   flat_plate_heat_000_surf.cgns   -> wall SkinFriction, Pressure, Density,
                                       StantonNumber (see NU_ADFLOW below)
   flat_plate_heat_000_vol.cgns    -> volume Velocity field, for the exit
                                       velocity profile
+(gc_study/l*/wall_heatflux.npz is stale/corrupted -- coords/heatFlux are
+byte-identical denormalized garbage across all three levels -- so this
+script reads the CGNS surface files directly instead.)
 
 Produces:
-  blasius_comparison.png   Cf(x), exit-plane u/U profile, and Nu(x/L)
-                            SU2 (compressible + incompressible) + ADflow
-                            vs theory
+  grid_convergence.png   Cf(x), exit-plane u/U profile, and Nu(x/L)
+                          SU2 (compressible + incompressible, dashed) +
+                          ADflow l0/l1/l2 vs theory
 """
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_bvp
+from scipy.interpolate import PchipInterpolator
 import vtk
 from vtk.util.numpy_support import vtk_to_numpy
 
@@ -114,6 +128,27 @@ def blasius_velocity(eta_query):
     return f_of_eta(eta_query)[1]
 
 # ----------------------------------------------------------------------
+# 2b) Interpolation helper: shape-preserving (PCHIP) interpolation of a
+#     scattered (x, y) SU2 series onto a fine grid for a smooth dashed
+#     line, deduping any repeated x first (PCHIP needs strictly
+#     increasing x). PCHIP (not a plain cubic spline) is used because it
+#     never overshoots between samples -- a plain cubic spline rings
+#     badly across the near-constant, slightly noisy free-stream plateau
+#     in the velocity profile (u/U ~ 1 for most of the probe line).
+# ----------------------------------------------------------------------
+def interp_dashed(x, y, n=300, xlim=None):
+    x_u, idx = np.unique(x, return_index=True)
+    y_u = y[idx]
+    if xlim is not None:
+        keep = (x_u >= xlim[0]) & (x_u <= xlim[1])
+        x_u, y_u = x_u[keep], y_u[keep]
+    if len(x_u) < 3:
+        return x_u, y_u
+    f = PchipInterpolator(x_u, y_u)
+    x_fine = np.linspace(x_u.min(), x_u.max(), n)
+    return x_fine, f(x_fine)
+
+# ----------------------------------------------------------------------
 # 3) VTK helpers
 # ----------------------------------------------------------------------
 def read_vtu(fname):
@@ -141,12 +176,12 @@ def probe_column(vol, x_val, y_max, n=200):
     return pts[valid, 1], vel[valid, 0]
 
 CASES = {
-    # incompressible is drawn first as a larger hollow ring, compressible on
-    # top as a smaller filled dot -- keeps both visible where points coincide
+    # incompressible drawn first (solid-ish, but dashed line), compressible
+    # on top -- keeps both visible where curves coincide
     "incompressible": dict(color="blue", label="SU2 Incompressible (Sutherland)",
-                            ms=8, mfc="none", mec="blue", mew=1.4, zorder=3),
+                            lw=1.8, ls="--", zorder=3),
     "compressible": dict(color="red", label="SU2 Compressible",
-                          ms=4, mfc="red", mec="white", mew=0.6, zorder=4),
+                          lw=1.8, ls="--", zorder=4),
 }
 
 for name, case in CASES.items():
@@ -154,12 +189,19 @@ for name, case in CASES.items():
     case["vol"] = read_vtu(f"su2/{name}/flow.vtu")
 
 # ----------------------------------------------------------------------
-# 3b) ADflow case (output/) -- isothermal wall at the same T_WALL_INC,
-#     read via VTK's CGNS reader instead of the .vtu reader used for SU2.
+# 3b) ADflow cases -- isothermal wall at the same T_WALL_INC, read via
+#     VTK's CGNS reader instead of the .vtu reader used for SU2. Three
+#     mesh levels from the grid-convergence study are compared: l0
+#     (finest), l1, l2 (coarsest), all archived under gc_study/.
 # ----------------------------------------------------------------------
-ADFLOW_SURF = "output/flat_plate_heat_000_surf.cgns"
-ADFLOW_VOL = "output/flat_plate_heat_000_vol.cgns"
-ADFLOW_STYLE = dict(color="purple", label="ADflow", ms=5, mfc="purple", mec="white", mew=0.6, alpha=0.9, zorder=5)
+ADFLOW_CASES = {
+    "l0": dict(dir="gc_study/l0", color="green", label="ADflow (l0)",
+               ms=5.0, mfc="none", mec="green", mew=0.8, alpha=0.95, zorder=7),
+    "l1": dict(dir="gc_study/l1", color="purple", label="ADflow (l1)",
+               ms=3.5, mfc="purple", mec="white", mew=0.6, alpha=0.9, zorder=6),
+    "l2": dict(dir="gc_study/l2", color="darkorange", label="ADflow (l2)",
+               ms=3.5, mfc="darkorange", mec="white", mew=0.6, alpha=0.9, zorder=5),
+}
 
 def read_cgns(fname):
     rdr = vtk.vtkCGNSReader()
@@ -181,37 +223,44 @@ def cgns_zone_by_name(multiblock, needle):
             return base.GetBlock(i)
     raise KeyError(f"no CGNS zone matching '{needle}' in {[base.GetMetaData(i).Get(vtk.vtkCompositeDataSet.NAME()) for i in range(base.GetNumberOfBlocks())]}")
 
-adflow_wall = cgns_zone_by_name(read_cgns(ADFLOW_SURF), "Isothermal")
+def load_adflow(case_dir):
+    wall = cgns_zone_by_name(read_cgns(f"{case_dir}/flat_plate_heat_000_surf.cgns"), "Isothermal")
 
-cc = vtk.vtkCellCenters()
-cc.SetInputData(adflow_wall)
-cc.Update()
-adflow_x = vtk_to_numpy(cc.GetOutput().GetPoints().GetData())[:, 0]
-adflow_order = np.argsort(adflow_x)
-adflow_x = adflow_x[adflow_order]
-adflow_mask = adflow_x > 1e-6
+    cc = vtk.vtkCellCenters()
+    cc.SetInputData(wall)
+    cc.Update()
+    x = vtk_to_numpy(cc.GetOutput().GetPoints().GetData())[:, 0]
+    order = np.argsort(x)
+    x = x[order]
+    mask = x > 1e-6
 
-adflow_wall_cd = adflow_wall.GetCellData()
-adflow_cf = vtk_to_numpy(adflow_wall_cd.GetArray("SkinFriction"))[adflow_order, 0]
-# StantonNumber, Pressure and Density are all in ADflow's internal
-# nondimensional units (freestream pInf = rhoInf = 1 by construction --
-# ADflow's reference pressure/density *are* the dimensional freestream
-# static P, rho), which is what the wall heat flux is recovered from
-# below (see NU_ADFLOW).
-adflow_ch = vtk_to_numpy(adflow_wall_cd.GetArray("StantonNumber"))[adflow_order]
-adflow_P_nd = vtk_to_numpy(adflow_wall_cd.GetArray("Pressure"))[adflow_order]
-adflow_rho_nd = vtk_to_numpy(adflow_wall_cd.GetArray("Density"))[adflow_order]
+    wall_cd = wall.GetCellData()
+    cf = vtk_to_numpy(wall_cd.GetArray("SkinFriction"))[order, 0]
+    # StantonNumber, Pressure and Density are all in ADflow's internal
+    # nondimensional units (freestream pInf = rhoInf = 1 by construction --
+    # ADflow's reference pressure/density *are* the dimensional freestream
+    # static P, rho), which is what the wall heat flux is recovered from
+    # below (see NU_ADFLOW).
+    ch = vtk_to_numpy(wall_cd.GetArray("StantonNumber"))[order]
+    P_nd = vtk_to_numpy(wall_cd.GetArray("Pressure"))[order]
+    rho_nd = vtk_to_numpy(wall_cd.GetArray("Density"))[order]
 
-adflow_vol = cgns_zone_by_name(read_cgns(ADFLOW_VOL), "blk")
-adflow_vol_c2p = vtk.vtkCellDataToPointData()
-adflow_vol_c2p.SetInputData(adflow_vol)
-adflow_vol_c2p.Update()
-adflow_vol_pd = adflow_vol_c2p.GetOutput()
+    vol = cgns_zone_by_name(read_cgns(f"{case_dir}/flat_plate_heat_000_vol.cgns"), "blk")
+    vol_c2p = vtk.vtkCellDataToPointData()
+    vol_c2p.SetInputData(vol)
+    vol_c2p.Update()
+    vol_pd = vol_c2p.GetOutput()
+
+    return dict(x=x, mask=mask, cf=cf, ch=ch, P_nd=P_nd, rho_nd=rho_nd, vol_pd=vol_pd)
+
+for name, case in ADFLOW_CASES.items():
+    case.update(load_adflow(case["dir"]))
 
 fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(16, 4.5))
 
 # ----------------------------------------------------------------------
-# 4) Skin friction: SU2 (both cases) vs Blasius Cf(x) = 0.664/sqrt(Re_x)
+# 4) Skin friction: SU2 (both cases, interpolated dashed) vs Blasius
+#    Cf(x) = 0.664/sqrt(Re_x)
 # ----------------------------------------------------------------------
 theory_plotted = False
 for name, case in CASES.items():
@@ -238,17 +287,19 @@ for name, case in CASES.items():
         )
         theory_plotted = True
 
+    x_fine, cf_fine = interp_dashed(x_wall_m, cf_su2)
     ax1.plot(
-        x_wall_m, cf_su2, "o",
-        ms=case["ms"], mfc=case["mfc"], mec=case["mec"], mew=case["mew"],
+        x_fine, cf_fine, ls=case["ls"],
+        color=case["color"], lw=case["lw"],
         alpha=0.9, zorder=case["zorder"], label=case["label"],
     )
 
-ax1.plot(
-    adflow_x[adflow_mask], adflow_cf[adflow_mask], "o",
-    ms=ADFLOW_STYLE["ms"], mfc=ADFLOW_STYLE["mfc"], mec=ADFLOW_STYLE["mec"], mew=ADFLOW_STYLE["mew"],
-    alpha=ADFLOW_STYLE["alpha"], zorder=ADFLOW_STYLE["zorder"], label=ADFLOW_STYLE["label"],
-)
+for name, case in ADFLOW_CASES.items():
+    ax1.plot(
+        case["x"][case["mask"]], case["cf"][case["mask"]], "o",
+        ms=case["ms"], mfc=case["mfc"], mec=case["mec"], mew=case["mew"],
+        alpha=case["alpha"], zorder=case["zorder"], label=case["label"],
+    )
 
 ax1.set_xlabel("x (m)")
 ax1.set_ylabel(r"$C_f$")
@@ -261,7 +312,8 @@ ax1.legend()
 ax1.grid(alpha=0.3)
 
 # ----------------------------------------------------------------------
-# 5) Velocity profiles u/U_inf vs eta at the exit plane (x = L), both cases
+# 5) Velocity profiles u/U_inf vs eta at the exit plane (x = L), both
+#    SU2 cases interpolated dashed, ADflow levels as markers
 # ----------------------------------------------------------------------
 x_val = L_REF  # exit plane (trailing edge, x = L)
 
@@ -293,25 +345,26 @@ for name, case in CASES.items():
     # Velocity field is already non-dimensionalized by U_inf
     u_over_U = u_raw / U_INF if name == "compressible" else u_raw
     eta_probe = y * np.sqrt(U_INF / (NU_INF * x_val))
-    idx = thin_by_eta(eta_probe)
+    eta_fine, u_fine = interp_dashed(eta_probe, u_over_U, n=300, xlim=(0, 9))
     ax2.plot(
-        u_over_U[idx], eta_probe[idx], "o",
-        ms=case["ms"], mfc=case["mfc"], mec=case["mec"], mew=case["mew"],
-        alpha=0.9, zorder=case["zorder"], label=f"{case['label']} (exit plane, x=L)",
+        u_fine, eta_fine, ls=case["ls"],
+        color=case["color"], lw=case["lw"],
+        alpha=0.9, zorder=case["zorder"], label=case["label"],
     )
 
 # ADflow: Velocity is nondimensionalized by sqrt(pRef/rhoRef), not U_inf,
 # so u/U_inf = u_nondim / (Mach * sqrt(gamma)) rather than a raw copy.
-y_adflow, u_adflow_nd = probe_column(adflow_vol_pd, x_val - 1e-4, y_max)
-u_over_U_adflow = u_adflow_nd / (MACH * np.sqrt(GAMMA))
-eta_adflow = y_adflow * np.sqrt(U_INF / (NU_INF * x_val))
-idx_adflow = thin_by_eta(eta_adflow)
-ax2.plot(
-    u_over_U_adflow[idx_adflow], eta_adflow[idx_adflow], "o",
-    ms=ADFLOW_STYLE["ms"], mfc=ADFLOW_STYLE["mfc"], mec=ADFLOW_STYLE["mec"], mew=ADFLOW_STYLE["mew"],
-    alpha=ADFLOW_STYLE["alpha"], zorder=ADFLOW_STYLE["zorder"],
-    label=f"{ADFLOW_STYLE['label']} (exit plane, x=L)",
-)
+for name, case in ADFLOW_CASES.items():
+    y_adflow, u_adflow_nd = probe_column(case["vol_pd"], x_val - 1e-4, y_max)
+    u_over_U_adflow = u_adflow_nd / (MACH * np.sqrt(GAMMA))
+    eta_adflow = y_adflow * np.sqrt(U_INF / (NU_INF * x_val))
+    idx_adflow = thin_by_eta(eta_adflow)
+    ax2.plot(
+        u_over_U_adflow[idx_adflow], eta_adflow[idx_adflow], "o",
+        ms=case["ms"], mfc=case["mfc"], mec=case["mec"], mew=case["mew"],
+        alpha=case["alpha"], zorder=case["zorder"],
+        label=case["label"],
+    )
 
 ax2.set_xlabel(r"$u / U_\infty$")
 ax2.set_ylabel(r"$\eta = y\sqrt{U_\infty/(\nu x)}$")
@@ -355,10 +408,11 @@ ax3.plot(
     color="black", lw=1.5, zorder=2,
     label=r"Blasius: $0.332\sqrt{Re_x}\,Pr^{1/3}$",
 )
+xoL_fine, Nu_fine = interp_dashed(xoL_su2, Nu_su2)
 ax3.plot(
-    xoL_su2, Nu_su2, "o",
-    ms=4, mfc=inc["color"], mec="white", mew=0.6, alpha=0.9,
-    zorder=3, label=inc["label"],
+    xoL_fine, Nu_fine, ls=inc["ls"],
+    color=inc["color"], lw=inc["lw"],
+    alpha=0.9, zorder=3, label=inc["label"],
 )
 
 # ---------------------------------------------------------------------
@@ -378,21 +432,22 @@ ax3.plot(
 gm1 = GAMMA - 1.0
 a2Tot_nd = GAMMA * (1.0 + 0.5 * gm1 * MACH**2)  # pInf_nd = rhoInf_nd = 1
 fact_nd = MACH * np.sqrt(GAMMA) / gm1
-a2_nd = GAMMA * adflow_P_nd / adflow_rho_nd
-qw_nd = adflow_ch * fact_nd * (a2Tot_nd - a2_nd)
-
 P_INF = RHO_INF * R_GAS * T_INF  # ideal gas static freestream pressure == ADflow's pRef
 scaleDim = P_INF * np.sqrt(P_INF / RHO_INF)
-qw_adflow = qw_nd * scaleDim  # W/m^2
 
-Nu_adflow = qw_adflow[adflow_mask] * adflow_x[adflow_mask] / (K_INC * dT)
-xoL_adflow = adflow_x[adflow_mask] / L_REF
+for name, case in ADFLOW_CASES.items():
+    a2_nd = GAMMA * case["P_nd"] / case["rho_nd"]
+    qw_nd = case["ch"] * fact_nd * (a2Tot_nd - a2_nd)
+    qw_adflow = qw_nd * scaleDim  # W/m^2
 
-ax3.plot(
-    xoL_adflow, Nu_adflow, "o",
-    ms=ADFLOW_STYLE["ms"], mfc=ADFLOW_STYLE["mfc"], mec=ADFLOW_STYLE["mec"], mew=ADFLOW_STYLE["mew"],
-    alpha=ADFLOW_STYLE["alpha"], zorder=ADFLOW_STYLE["zorder"], label=ADFLOW_STYLE["label"],
-)
+    Nu_adflow = qw_adflow[case["mask"]] * case["x"][case["mask"]] / (K_INC * dT)
+    xoL_adflow = case["x"][case["mask"]] / L_REF
+
+    ax3.plot(
+        xoL_adflow, Nu_adflow, "o",
+        ms=case["ms"], mfc=case["mfc"], mec=case["mec"], mew=case["mew"],
+        alpha=case["alpha"], zorder=case["zorder"], label=case["label"],
+    )
 
 ax3.set_xlabel(r"$x/L$")
 ax3.set_ylabel(r"$Nu_x$")
@@ -404,7 +459,7 @@ ax3.set_title("Nusselt number")
 ax3.legend()
 ax3.grid(alpha=0.3)
 
-fig.suptitle("SU2 (lam_flatplate) + ADflow vs Blasius similarity solutions")
+fig.suptitle("SU2 (lam_flatplate) + ADflow grid-convergence (l0/l1/l2) vs Blasius similarity solutions")
 fig.tight_layout()
-fig.savefig("blasius_comparison.png", dpi=150)
-print("Wrote blasius_comparison.png")
+fig.savefig("grid_convergence.png", dpi=300)
+print("Wrote grid_convergence.png")

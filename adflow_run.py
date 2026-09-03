@@ -60,7 +60,7 @@ from mpi4py import MPI
 # Parse CLI arguments
 parser = argparse.ArgumentParser()
 parser.add_argument("--output", type=str, default="output")
-parser.add_argument("--gridFile", type=str, default="./meshes/fp_l1_rebunch_fixed_inout.cgns")
+parser.add_argument("--gridFile", type=str, default="./meshes/fp_l0_rebunch_fixed_inout.cgns")
 parser.add_argument("--mgcycle", type=str, default="sg")
 parser.add_argument("--Twall", type=float, default=None, help="override the wall temperature (K) baked into the mesh")
 args = parser.parse_args()
@@ -80,6 +80,11 @@ aeroOptions = {
     "outputDirectory": args.output,
     "monitorvariables": ["resrho", "resmom", "resrhoe", "yplus"],
     "writeTecplotSurfaceSolution": True,
+    # The CGNS surface writer needs a parallel-HDF5 build; ours isn't one, and
+    # in parallel it segfaults on whichever rank owns few/no wall faces after
+    # partitioning. The Tecplot surface file above uses a separate, non-HDF5
+    # writer and carries the same surfaceVariables, so just skip CGNS here.
+    "writeSurfaceSolution": True,
     "surfaceVariables": ["cf", "cfx", "cfy", "cfz", "p", "vx", "vy", "vz", "temp", "rho", "mach", "yplus", "ch"],
     "equationType": "laminar NS",
     "equationMode": "steady",
