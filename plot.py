@@ -3,9 +3,10 @@ Blasius laminar flat-plate similarity solutions vs SU2 and ADflow CFD
 results, comparing all three ADflow grid-convergence mesh levels
 (l0, l1, l2) against SU2 and Blasius theory.
 
-Case: SU2 "Laminar Flat Plate" tutorial (lam_flatplate.cfg), run twice:
-  su2/compressible/    -> SOLVER= NAVIER_STOKES,      adiabatic wall (no heat transfer)
-  su2/incompressible/  -> SOLVER= INC_NAVIER_STOKES,  isothermal cooled wall (148.81 K)
+Case: SU2 "Laminar Flat Plate" tutorial (lam_flatplate.cfg), run three times:
+  su2/compressible_adiabatic/   -> SOLVER= NAVIER_STOKES,     adiabatic wall (no heat transfer)
+  su2/compressible_isothermal/  -> SOLVER= NAVIER_STOKES,     isothermal cooled wall (148.81 K)
+  su2/incompressible/           -> SOLVER= INC_NAVIER_STOKES, isothermal cooled wall (148.81 K)
 
   https://su2code.github.io/tutorials/Laminar_Flat_Plate/
 
@@ -22,6 +23,12 @@ this run now has both variable viscosity AND variable density, i.e. roughly
 ADflow's physics solved via SU2's incompressible (pressure-based) algorithm
 instead of ADflow's compressible (density-based) one. See
 su2/incompressible/lam_flatplate.cfg for the exact change.
+
+compressible_isothermal/ is compressible_adiabatic/'s mesh/solver with the
+wall BC swapped from adiabatic to the same isothermal 148.81 K setpoint as
+incompressible/ and ADflow, isolating the wall-BC effect from the
+compressible-vs-incompressible-algorithm effect (see su2/compressible_isothermal/lam_flatplate.cfg).
+
 SU2 curves are PCHIP-interpolated onto a fine grid and drawn as dashed
 lines rather than raw markers, since ADflow contributes three overlapping
 marker series.
@@ -52,8 +59,8 @@ script reads the CGNS surface files directly instead.)
 
 Produces:
   grid_convergence.png   Cf(x), exit-plane u/U profile, and Nu(x/L)
-                          SU2 (compressible + incompressible, dashed) +
-                          ADflow l0/l1/l2 vs theory
+                          SU2 (compressible adiabatic/isothermal +
+                          incompressible, dashed) + ADflow l0/l1/l2 vs theory
 """
 import numpy as np
 import matplotlib.pyplot as plt
@@ -180,8 +187,18 @@ CASES = {
     # on top -- keeps both visible where curves coincide
     "incompressible": dict(color="blue", label="SU2 Incompressible (Sutherland)",
                             lw=1.8, ls="--", zorder=3),
-    "compressible": dict(color="red", label="SU2 Compressible",
-                          lw=1.8, ls="--", zorder=4),
+    "compressible_adiabatic": dict(color="red", label="SU2 Compressible (Adiabatic)",
+                                    lw=1.8, ls="--", zorder=4),
+    # Same compressible (density-based) solver and mesh as
+    # "compressible_adiabatic" above, but with the wall switched from
+    # adiabatic (MARKER_HEATFLUX=0) to isothermal at 148.81 K -- the same
+    # cooled-wall temperature as
+    # "incompressible" and ADflow. Isolates the effect of the compressible
+    # vs. ADflow algorithm with the wall thermal BC held fixed, instead of
+    # comparing across both a different wall BC and a different algorithm
+    # at once (see su2/compressible_isothermal/lam_flatplate.cfg).
+    "compressible_isothermal": dict(color="darkviolet", label="SU2 Compressible (Isothermal)",
+                                     lw=1.8, ls="--", zorder=4.5),
 }
 
 for name, case in CASES.items():
@@ -195,8 +212,13 @@ for name, case in CASES.items():
 #     (finest), l1, l2 (coarsest), all archived under gc_study/.
 # ----------------------------------------------------------------------
 ADFLOW_CASES = {
+    # l0's mfc/mec/mew below (hollow) are used for the velocity-profile
+    # markers (ax2); wall_mfc/wall_mec/wall_mew (solid, same ms diameter)
+    # are used for the Cf and Nusselt-number markers (ax1, ax3) instead,
+    # matching the solid-dot style of l1/l2.
     "l0": dict(dir="gc_study/l0", color="green", label="ADflow (l0)",
-               ms=5.0, mfc="none", mec="green", mew=0.8, alpha=0.95, zorder=7),
+               ms=5.0, mfc="none", mec="green", mew=0.8, alpha=0.95, zorder=7,
+               wall_ms=3.5, wall_mfc="green", wall_mec="white", wall_mew=0.6),
     "l1": dict(dir="gc_study/l1", color="purple", label="ADflow (l1)",
                ms=3.5, mfc="purple", mec="white", mew=0.6, alpha=0.9, zorder=6),
     "l2": dict(dir="gc_study/l2", color="darkorange", label="ADflow (l2)",
@@ -297,7 +319,8 @@ for name, case in CASES.items():
 for name, case in ADFLOW_CASES.items():
     ax1.plot(
         case["x"][case["mask"]], case["cf"][case["mask"]], "o",
-        ms=case["ms"], mfc=case["mfc"], mec=case["mec"], mew=case["mew"],
+        ms=case.get("wall_ms", case["ms"]), mfc=case.get("wall_mfc", case["mfc"]),
+        mec=case.get("wall_mec", case["mec"]), mew=case.get("wall_mew", case["mew"]),
         alpha=case["alpha"], zorder=case["zorder"], label=case["label"],
     )
 
@@ -341,9 +364,10 @@ def thin_by_eta(eta_arr, n=25, eta_max=9.0):
 
 for name, case in CASES.items():
     y, u_raw = probe_column(case["vol"], x_val, y_max, n=200)
-    # compressible Velocity field is dimensional (m/s); incompressible
-    # Velocity field is already non-dimensionalized by U_inf
-    u_over_U = u_raw / U_INF if name == "compressible" else u_raw
+    # compressible (both adiabatic and isothermal) Velocity field is
+    # dimensional (m/s); incompressible Velocity field is already
+    # non-dimensionalized by U_inf
+    u_over_U = u_raw / U_INF if name != "incompressible" else u_raw
     eta_probe = y * np.sqrt(U_INF / (NU_INF * x_val))
     eta_fine, u_fine = interp_dashed(eta_probe, u_over_U, n=300, xlim=(0, 9))
     ax2.plot(
@@ -377,27 +401,31 @@ ax2.legend(loc="upper left", framealpha=1.0)
 ax2.grid(alpha=0.3)
 
 # ----------------------------------------------------------------------
-# 6) Nusselt number vs x/L (incompressible only -- the compressible case
-#    runs an adiabatic wall, MARKER_HEATFLUX=0, so it has no wall heat
-#    transfer to compare). Nu_x = q_wall * x / (k * (T_inf - T_wall)).
+# 6) Nusselt number vs x/L. Only the two isothermal SU2 cases have wall
+#    heat transfer to compare -- "compressible_adiabatic" (adiabatic,
+#    MARKER_HEATFLUX=0) is skipped here. Nu_x = q_wall*x/(k*(T_inf-T_wall)),
+#    with k = K_INC (freestream-viscosity/constant-Prandtl conductivity)
+#    and dT held at the constant MARKER_ISOTHERMAL setpoint for all
+#    curves, for a consistent Nu_x definition even though the compressible
+#    solves' local k and wall T both vary slightly along x (Sutherland).
 # ----------------------------------------------------------------------
-inc = CASES["incompressible"]
-wall_pts = vtk_to_numpy(inc["wall"].GetPoints().GetData())
-q_wall = vtk_to_numpy(inc["wall"].GetPointData().GetArray("Heat_Flux"))
-T_wall_field = vtk_to_numpy(inc["wall"].GetPointData().GetArray("Temperature"))  # normalized by T_inf
-
-order = np.argsort(wall_pts[:, 0])
-x_wall = wall_pts[order, 0]
-q_wall = q_wall[order]
-T_wall_field = T_wall_field[order]
-
-mask = x_wall > 1e-6
-x_wall_m = x_wall[mask]
-q_wall_m = q_wall[mask]
 dT = T_INF - T_WALL_INC  # K
 
-Nu_su2 = q_wall_m * x_wall_m / (K_INC * dT)
-xoL_su2 = x_wall_m / L_REF
+def su2_wall_Nu(case):
+    wall_pts = vtk_to_numpy(case["wall"].GetPoints().GetData())
+    q_wall = vtk_to_numpy(case["wall"].GetPointData().GetArray("Heat_Flux"))
+
+    order = np.argsort(wall_pts[:, 0])
+    x_wall = wall_pts[order, 0]
+    q_wall = q_wall[order]
+
+    mask = x_wall > 1e-6
+    x_wall_m = x_wall[mask]
+    q_wall_m = q_wall[mask]
+
+    Nu = q_wall_m * x_wall_m / (K_INC * dT)
+    xoL = x_wall_m / L_REF
+    return xoL, Nu
 
 xoL_theory = np.linspace(1e-4, 1.0, 200)
 Re_x_theory = U_INF * (xoL_theory * L_REF) / NU_INF
@@ -408,12 +436,15 @@ ax3.plot(
     color="black", lw=1.5, zorder=2,
     label=r"Blasius: $0.332\sqrt{Re_x}\,Pr^{1/3}$",
 )
-xoL_fine, Nu_fine = interp_dashed(xoL_su2, Nu_su2)
-ax3.plot(
-    xoL_fine, Nu_fine, ls=inc["ls"],
-    color=inc["color"], lw=inc["lw"],
-    alpha=0.9, zorder=3, label=inc["label"],
-)
+for name in ("incompressible", "compressible_isothermal"):
+    case = CASES[name]
+    xoL_su2, Nu_su2 = su2_wall_Nu(case)
+    xoL_fine, Nu_fine = interp_dashed(xoL_su2, Nu_su2)
+    ax3.plot(
+        xoL_fine, Nu_fine, ls=case["ls"],
+        color=case["color"], lw=case["lw"],
+        alpha=0.9, zorder=case["zorder"], label=case["label"],
+    )
 
 # ---------------------------------------------------------------------
 # ADflow Nu(x): the CGNS surface output has no raw heat-flux field --
@@ -445,7 +476,8 @@ for name, case in ADFLOW_CASES.items():
 
     ax3.plot(
         xoL_adflow, Nu_adflow, "o",
-        ms=case["ms"], mfc=case["mfc"], mec=case["mec"], mew=case["mew"],
+        ms=case.get("wall_ms", case["ms"]), mfc=case.get("wall_mfc", case["mfc"]),
+        mec=case.get("wall_mec", case["mec"]), mew=case.get("wall_mew", case["mew"]),
         alpha=case["alpha"], zorder=case["zorder"], label=case["label"],
     )
 
