@@ -219,8 +219,8 @@ ADFLOW_CASES = {
     "l0": dict(dir="gc_study/l0", color="green", label="ADflow (l0)",
                ms=5.0, mfc="none", mec="green", mew=0.8, alpha=0.95, zorder=7,
                wall_ms=3.5, wall_mfc="green", wall_mec="white", wall_mew=0.6),
-    "l1": dict(dir="gc_study/l1", color="purple", label="ADflow (l1)",
-               ms=3.5, mfc="purple", mec="white", mew=0.6, alpha=0.9, zorder=6),
+    "l1": dict(dir="gc_study/l1", color="magenta", label="ADflow (l1)",
+               ms=3.5, mfc="magenta", mec="white", mew=0.6, alpha=0.9, zorder=6),
     "l2": dict(dir="gc_study/l2", color="darkorange", label="ADflow (l2)",
                ms=3.5, mfc="darkorange", mec="white", mew=0.6, alpha=0.9, zorder=5),
 }
